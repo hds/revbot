@@ -1,0 +1,22 @@
+[package]
+name = "revbot"
+version = "0.1.0"
+authors = ["Hayden Stainsby <cargo@caffeineconcepts.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-stream = "0.3"
+chrono = "0.4.19"
+config = { version ="0.11", features = ["yaml"] }
+futures = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"
+hyper = { version = "0.14", features = ["full"] }
+log = "0.4"
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+structopt = { version = "0.3", default-features = false }
+tokio = { version = "1", features = ["full"] }
