@@ -1,3 +1,4 @@
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,8 +33,7 @@ impl WebexClient {
     pub async fn send_message(self, msg: &Message) -> Result<(), Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
 
-        println!("Sending message: {:?}", &msg);
-        println!("Sending with token: {}", &self.access_token);
+        debug!("Sending message: {:?}", &msg);
         let res = client.post("https://api.ciscospark.com/v1/messages")
             .json(&msg)
             .bearer_auth(&self.access_token)
@@ -41,8 +41,8 @@ impl WebexClient {
             .await?;
 
         match res.json::<Value>().await {
-            Ok(json) => println!("Response body: {}", json),
-            Err(err) => println!("Couldn't parse body to JSON: {}", err),
+            Ok(json) => debug!("Response body: {}", json),
+            Err(err) => warn!("Couldn't parse body to JSON: {}", err),
         }
 
         Ok(())

@@ -4,6 +4,7 @@ use chrono::Utc;
 use hyper::body;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{self, Body, Error, Request, Response, Server, StatusCode};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use structopt::StructOpt;
@@ -114,8 +115,7 @@ async fn handle(request: Request<Body>, webex_client: WebexClient) -> Result<Res
         Ok(my_bytest) => {
             let my_string = String::from_utf8(my_bytest.to_vec()).unwrap();
             let v: Value = serde_json::from_str(&my_string).unwrap();
-            println!(
-                "\x1b[0;32m{}\x1b[0m Request: {}",
+            debug!("{} Request: {}",
                 Utc::now().format("%Y-%m-%d %H:%M:%S"),
                 serde_json::to_string_pretty(&v).unwrap()
             );
@@ -126,23 +126,23 @@ async fn handle(request: Request<Body>, webex_client: WebexClient) -> Result<Res
                 serde_json::from_str(&my_string);
             match webhook_msg {
                 Ok(webhook_msg) => {
-                    println!("Web Hook: {:?}", webhook_msg);
+                    debug!("Web Hook: {:?}", webhook_msg);
                     if let Some(assignee_changes) = webhook_msg.get_assignee_changes() {
                         for new_assignee in get_new_assignees(assignee_changes) {
                             if let Some(msg) = process_new_assignee(&new_assignee, &webhook_msg) {
 
                                 match webex_client.clone().send_message(&msg).await {
-                                    Ok(_) => println!("Sent message to: {}", &new_assignee.email),
-                                    Err(err) => println!("Error sending message to {}: {:?}", &new_assignee.email, err),
+                                    Ok(_) => info!("Sent message to: {}", &new_assignee.email),
+                                    Err(err) => warn!("Error sending message to {}: {:?}", &new_assignee.email, err),
                                 }
                             }
                         }
                     }
                 }
-                Err(err) => println!("Error decoding web hook: {:?}", err),
+                Err(err) => warn!("Error decoding web hook: {:?}", err),
             }
         }
-        Err(error) => println!("Error: {}", error),
+        Err(error) => warn!("Error: {}", error),
     }
 
     Ok(response)
@@ -192,11 +192,13 @@ impl Config {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::from_args();
-    println!("We would start on: {}:{}", opt.address, opt.port);
+    info!("We would start on: {}:{}", opt.address, opt.port);
+
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     let config = Config::new("conf/default")?;
 
-    println!("Config (now what?): {:?}", config);
+    debug!("Config (now what?): {:?}", config);
 
     let webex_client = WebexClient::new(config.webex.access_token);
 
@@ -217,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = Server::bind(&addr).serve(make_service);
 
     if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
+        error!("server error: {}", e);
     }
 
     Ok(())
