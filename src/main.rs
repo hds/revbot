@@ -131,7 +131,7 @@ async fn handle(request: Request<Body>, webex_client: WebexClient) -> Result<Res
                         for new_assignee in get_new_assignees(assignee_changes) {
                             if let Some(msg) = process_new_assignee(&new_assignee, &webhook_msg) {
 
-                                match webex_client.clone().send_message(&msg).await {
+                                match webex_client.clone().send_message(msg).await {
                                     Ok(_) => info!("Sent message to: {}", &new_assignee.email),
                                     Err(err) => warn!("Error sending message to {}: {:?}", &new_assignee.email, err),
                                 }
@@ -171,6 +171,7 @@ struct WebexConfig {
     access_token: String,
     webhook_path: Option<String>,
     webhook_token: Option<String>,
+    whoami_link: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -200,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     debug!("Config (now what?): {:?}", config);
 
-    let webex_client = WebexClient::new(config.webex.access_token);
+    let webex_client = WebexClient::new(config.webex.access_token, config.webex.whoami_link);
 
     let addr_str = format!("{}:{}", opt.address, opt.port);
     let addr: SocketAddr = addr_str.parse().expect("Bad address");
