@@ -1,6 +1,6 @@
-use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::{debug, warn};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message {

@@ -4,9 +4,10 @@ use bytes::Bytes;
 use hyper::body;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{self, Body, Error, Request, Response, Server};
-use log::{debug, error, info, warn};
 use serde::Deserialize;
 use structopt::StructOpt;
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 mod message;
 mod gitlab;
@@ -97,12 +98,19 @@ impl Config {
     }
 }
 
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
+
     let opt = Opt::from_args();
     info!("We would start on: {}:{}", opt.address, opt.port);
-
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     let config = Config::new("conf/default")?;
 
