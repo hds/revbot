@@ -1,4 +1,6 @@
 [gitlab]
+access_token = "Set $REVBOT_GITLAB__ACCESS_TOKEN env variable to specify securely"
+hostname = "main.gitlab.in.here.com"
 webhook_path = "/gitlab"
 webhook_token = "Set $REVBOT_GITLAB__WEBHOOK_TOKEN env variable to specify securely"
 
@@ -6,3 +8,4 @@ webhook_token = "Set $REVBOT_GITLAB__WEBHOOK_TOKEN env variable to specify secur
 access_token = "Set $REVBOT_WEBEX__ACCESS_TOKEN environment variable to specify securely"
 webhook_path = "/webex"
 webhook_token = "Set $REVBOT_WEBEX__WEBHOOK_TOKEN env variable to specify securely"
+whoami_link = "https://main.gitlab.in.here.com/stainsby/review-bot/"

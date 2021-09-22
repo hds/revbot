@@ -1,85 +1,48 @@
 use std::fmt;
 
 use bytes::Bytes;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::Value;
+use tracing::debug;
 
 use crate::message::Message;
+use super::client::GitlabClient;
+use super::common::{MergeRequestAttributes, PipelineAttributes, Project, StatusState, User};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct User {
-    email: String,
-    id: u64,
-    name: String,
-    username: String,
-}
+#[derive(Clone, Debug)]
+struct NotFound;
 
-impl PartialEq for User {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+impl fmt::Display for NotFound {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Details Not Found")
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+impl std::error::Error for NotFound {}
+
+#[derive(Clone, Debug)]
+struct UnsupportedWebhook;
+
+impl fmt::Display for UnsupportedWebhook {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Unsupported Webhook")
+    }
+}
+
+impl std::error::Error for UnsupportedWebhook {}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 struct AssigneeChanges {
     current: Vec<User>,
     previous: Vec<User>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 struct Changes {
     assignees: Option<AssigneeChanges>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum MergeStatus {
-    Unchecked,
-    Checking,
-    CanBeMerged,
-    CannotBeMerged,
-    CannotBeMergedRecheck,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-struct MergeRequestAttributes {
-    iid: u64,
-    merge_status: MergeStatus,
-    title: String,
-    url: String,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PipelineStatus {
-    Created,
-    WaitingForResource,
-    Preparing,
-    Pending,
-    Running,
-    Success,
-    Failed,
-    Canceled,
-    Skipped,
-    Manual,
-    Scheduled,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-struct PipelineAttributes {
-    finished_at: Option<String>,
-    id: u64,
-    #[serde(rename = "ref")]
-    ref_: String,
-    status: PipelineStatus,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-struct Project {
-    name: String,
-    web_url: String,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 struct MergeRequestWebhook {
     assignees: Option<Vec<User>>,
     changes: Option<Changes>,
@@ -102,8 +65,9 @@ impl MergeRequestWebhook {
 }
 
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 struct PipelineWebhook {
+    merge_request: Option<MergeRequestAttributes>,
     #[serde(rename = "object_attributes")]
     pipeline: PipelineAttributes,
     project: Project,
@@ -111,7 +75,7 @@ struct PipelineWebhook {
 }
 
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "object_kind", rename_all = "snake_case")]
 enum Webhook {
     MergeRequest(MergeRequestWebhook),
@@ -134,7 +98,7 @@ fn process_new_assignee(new_assignee: &User, webhook: &MergeRequestWebhook) -> O
 
     let recipient_email = new_assignee.email.to_owned();
     let message = format!(
-        "MR [!{mr_iid} {mr_title}]({mr_url}) \
+        "[!{mr_iid} {mr_title}]({mr_url}) \
         ([{project_name}]({project_url})) \
         by @{user} \
         🤩 Added as assignee",
@@ -147,23 +111,34 @@ fn process_new_assignee(new_assignee: &User, webhook: &MergeRequestWebhook) -> O
     })
 }
 
-fn process_pipeline_status(webhook: &PipelineWebhook) -> Option<Message> {
+async fn process_pipeline_status(webhook: &PipelineWebhook, gitlab_client: &GitlabClient) -> Option<Message> {
     let pipeline = &webhook.pipeline;
     let project = &webhook.project;
     let user = &webhook.user;
 
     let recipient_email = user.email.to_owned();
     let status_text = match pipeline.status {
-        PipelineStatus::Success => Some("🌞 Success"),
-        PipelineStatus::Failed => Some("⛈️ Failed"),
-        PipelineStatus::Running => Some("⏳ Running"),
+        StatusState::Success => Some("🌞 Success"),
+        StatusState::Failed => Some("⛈️ Failed"),
+        StatusState::Running => Some("⏳ Running"),
         _ => None,
     }?;
+
+
+    let gitlab_client = gitlab_client.clone();
+    let pipeline_details = gitlab_client.get_pipeline_details(webhook.project.id, webhook.pipeline.id).await?;
+    // We intentionally skip pipelines that don't have a merge request attached.
+    let merge_request_iid = webhook.merge_request.as_ref()?.iid;
+    let merge_request = gitlab_client.get_merge_request_details(webhook.project.id, merge_request_iid).await?;
+
     let message = format!(
-        "Pipeline [#{pipeline_id} {pipeline_ref}]({project_url}/-/pipelines/{pipeline_id}) \
+        "[!{mr_iid} {mr_title}]({mr_url}) \
+        ([{project_name}]({project_url})) \
+        [#{pipeline_id}]({pipeline_url}) \
         {pipeline_status}",
-        pipeline_id=pipeline.id, pipeline_ref=pipeline.ref_, project_url=project.web_url,
-        pipeline_status=status_text);
+        mr_iid=merge_request.iid, mr_title=merge_request.title, mr_url=merge_request.web_url,
+        project_name=project.name, project_url=project.web_url,
+        pipeline_id=pipeline.id, pipeline_url=pipeline_details.web_url, pipeline_status=status_text);
 
     Some(Message {
         recipient_email,
@@ -184,31 +159,23 @@ fn process_merge_request(webhook: &MergeRequestWebhook) -> Result<Vec<Message>, 
     Ok(messages)
 }
 
-fn process_pipeline(webhook: &PipelineWebhook) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-    match process_pipeline_status(webhook) {
+async fn process_pipeline(webhook: &PipelineWebhook, gitlab_client: &GitlabClient) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+
+    match process_pipeline_status(webhook, gitlab_client).await {
         Some(message) => Ok(vec![message]),
         None => Ok(Vec::new()),
     }
 }
 
-#[derive(Clone, Debug)]
-struct UnsupportedWebhook;
-
-impl fmt::Display for UnsupportedWebhook {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Unsupported Webhook")
-    }
-}
-
-impl std::error::Error for UnsupportedWebhook {}
-
-pub fn process_webhook(bytes: Bytes) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+pub async fn process_webhook(bytes: Bytes, gitlab_client: GitlabClient) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
     let string = String::from_utf8(bytes.to_vec())?;
     let webhook: Webhook = serde_json::from_str(&string).map_err(|_| UnsupportedWebhook)?;
+    let v: Value = serde_json::from_str(&string).unwrap();
+    debug!("Received Webhook: {}", serde_json::to_string_pretty(&v).unwrap());
 
     let response = match webhook {
         Webhook::MergeRequest(webhook) => process_merge_request(&webhook),
-        Webhook::Pipeline(webhook) => process_pipeline(&webhook),
+        Webhook::Pipeline(webhook) => process_pipeline(&webhook, &gitlab_client).await,
     };
 
     response
@@ -217,56 +184,62 @@ pub fn process_webhook(bytes: Bytes) -> Result<Vec<Message>, Box<dyn std::error:
 #[cfg(test)]
 mod test {
     use super::*;
+    use gitlab::types::MergeStatus;
 
     #[test]
     fn test_deserialize_merge_request() {
         let json = r#"
-      {
-      "object_attributes": {
-        "created_at": "2021-09-06 10:54:57 -0500",
-        "description": "",
-        "id": 289144,
-        "iid": 3,
-        "merge_error": null,
-        "merge_status": "unchecked",
-        "merge_when_pipeline_succeeds": false,
-        "state": "opened",
-        "state_id": 1,
-        "url": "https://main.gitlab.in.here.com/stainsby/mr-test/-/merge_requests/3",
-        "title": "Fail pipeline"
-      },
-      "object_kind": "merge_request",
-      "project": {
-        "name": "mr-test",
-        "web_url": "https://main.gitlab.in.here.com/stainsby/mr-test"
-      },
-      "user": {
-        "email": "hayden.stainsby@here.com",
-        "id": 1069,
-        "name": "Stainsby, Hayden",
-        "username": "stainsby"
-      }
-      }
-      "#;
+        {
+          "object_attributes": {
+            "created_at": "2021-09-06 10:54:57 -0500",
+            "description": "",
+            "id": 289144,
+            "iid": 3,
+            "merge_error": null,
+            "merge_status": "unchecked",
+            "merge_when_pipeline_succeeds": false,
+            "state": "opened",
+            "state_id": 1,
+            "url": "https://gitlab.com/hds-/mr-test/-/merge_requests/3",
+            "title": "Fail pipeline"
+          },
+          "object_kind": "merge_request",
+          "project": {
+            "id": 17898,
+            "name": "mr-test",
+            "path_with_namespace": "hds-/mr-test",
+            "web_url": "https://gitlab.com/hds-/mr-test"
+          },
+          "user": {
+            "email": "hds@example.com",
+            "id": 1069,
+            "name": "Hayden Stainsby",
+            "username": "hds-"
+          }
+        }
+        "#;
 
       let expected = Webhook::MergeRequest(MergeRequestWebhook {
           assignees: None,
           changes: None,
           merge_request: MergeRequestAttributes {
+              action: None,
               iid: 3,
               merge_status: MergeStatus::Unchecked,
               title: "Fail pipeline".to_owned(),
-              url: "https://main.gitlab.in.here.com/stainsby/mr-test/-/merge_requests/3".to_owned(),
+              url: "https://gitlab.com/hds-/mr-test/-/merge_requests/3".to_owned(),
           },
           project: Project {
+              id: 17898,
               name: "mr-test".to_owned(),
-              web_url: "https://main.gitlab.in.here.com/stainsby/mr-test".to_owned(),
+              path_with_namespace: "hds-/mr-test".to_owned(),
+              web_url: "https://gitlab.com/hds-/mr-test".to_owned(),
           },
           user: User {
-              email: "hayden.stainsby@here.com".to_owned(),
+              email: "hds@example.com".to_owned(),
               id: 1069,
-              name: "Stainsby, Hayden".to_owned(),
-              username: "stainsby".to_owned(),
+              name: "Hayden Stainsby".to_owned(),
+              username: "hds-".to_owned(),
           },
       });
 
@@ -278,43 +251,48 @@ mod test {
     #[test]
     fn test_deserialize_pipeline() {
         let json = r#"
-      {
-      "object_attributes": {
-        "finished_at": null,
-        "id": 4038106,
-        "ref": "fail-pipeline",
-        "status": "running"
-      },
-      "object_kind": "pipeline",
-      "project": {
-        "name": "mr-test",
-        "web_url": "https://main.gitlab.in.here.com/stainsby/mr-test"
-      },
-      "user": {
-        "email": "hayden.stainsby@here.com",
-        "id": 1069,
-        "name": "Stainsby, Hayden",
-        "username": "stainsby"
-      }
-      }
+        {
+          "object_attributes": {
+            "finished_at": null,
+            "id": 4038106,
+            "ref": "fail-pipeline",
+            "status": "running"
+          },
+          "object_kind": "pipeline",
+          "project": {
+            "id": 17898,
+            "name": "mr-test",
+            "path_with_namespace": "hds-/mr-test",
+            "web_url": "https://gitlab.com/hds-/mr-test"
+          },
+          "user": {
+            "email": "hds@example.com",
+            "id": 1069,
+            "name": "Hayden Stainsby",
+            "username": "hds-"
+          }
+        }
       "#;
 
       let expected = Webhook::Pipeline(PipelineWebhook {
+          merge_request: None,
           pipeline: PipelineAttributes {
               finished_at: None,
               id: 4038106,
               ref_: "fail-pipeline".to_owned(),
-              status: PipelineStatus::Running,
+              status: StatusState::Running,
           },
           project: Project {
+              id: 17898,
               name: "mr-test".to_owned(),
-              web_url: "https://main.gitlab.in.here.com/stainsby/mr-test".to_owned(),
+              path_with_namespace: "hds-/mr-test".to_owned(),
+              web_url: "https://gitlab.com/hds-/mr-test".to_owned(),
           },
           user: User {
-              email: "hayden.stainsby@here.com".to_owned(),
+              email: "hds@example.com".to_owned(),
               id: 1069,
-              name: "Stainsby, Hayden".to_owned(),
-              username: "stainsby".to_owned(),
+              name: "Hayden Stainsby".to_owned(),
+              username: "hds-".to_owned(),
           },
       });
 

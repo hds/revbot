@@ -13,6 +13,7 @@ mod message;
 mod gitlab;
 mod webex;
 
+use crate::gitlab::client::GitlabClient;
 use crate::gitlab::webhook::process_webhook;
 use crate::webex::WebexClient;
 
@@ -30,10 +31,11 @@ async fn send_messages(messages: Vec<message::Message>, webex_client: WebexClien
         }
 }
 
-fn handle_webhook(bytes: Bytes, webex_client: WebexClient) {
+fn handle_webhook(bytes: Bytes, gitlab_client: GitlabClient, webex_client: WebexClient) {
 
     tokio::spawn(async move {
-        let messages = match process_webhook(bytes) {
+        let gitlab_client = gitlab_client.clone();
+        let messages = match process_webhook(bytes, gitlab_client).await {
             Ok(messages) => messages,
             Err(error) => {
                 warn!("Error creating messages from webhook: {}", error);
@@ -45,11 +47,11 @@ fn handle_webhook(bytes: Bytes, webex_client: WebexClient) {
     });
 }
 
-async fn handle(request: Request<Body>, webex_client: WebexClient) -> Result<Response<Body>, Infallible> {
+async fn handle(request: Request<Body>, gitlab_client: GitlabClient, webex_client: WebexClient) -> Result<Response<Body>, Infallible> {
     let response = Response::new(Body::empty());
 
     match body::to_bytes(request.into_body()).await {
-        Ok(bytes) => handle_webhook(bytes, webex_client),
+        Ok(bytes) => handle_webhook(bytes, gitlab_client, webex_client),
         Err(error) => warn!("Error getting request body: {}", error),
     }
 
@@ -70,6 +72,8 @@ struct Opt {
 
 #[derive(Deserialize, Debug)]
 struct GitlabConfig {
+    access_token: String,
+    hostname: String,
     webhook_path: Option<String>,
     webhook_token: Option<String>,
 }
@@ -116,18 +120,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     debug!("Config (now what?): {:?}", config);
 
+    let gitlab_client = GitlabClient::new(config.gitlab.hostname, config.gitlab.access_token);
     let webex_client = WebexClient::new(config.webex.access_token, config.webex.whoami_link);
 
     let addr_str = format!("{}:{}", opt.address, opt.port);
     let addr: SocketAddr = addr_str.parse().expect("Bad address");
 
     let make_service = make_service_fn(move |_| {
+        let gitlab_client = gitlab_client.clone();
         let webex_client = webex_client.clone();
 
         async move {
             Ok::<_, Error>(service_fn(move |request: Request<Body>| {
+                let gitlab_client = gitlab_client.clone();
                 let webex_client = webex_client.clone();
-                handle(request, webex_client)
+                handle(request, gitlab_client, webex_client)
             }))
         }
     });
